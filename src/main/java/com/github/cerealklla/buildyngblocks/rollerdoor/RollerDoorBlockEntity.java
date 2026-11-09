@@ -1,7 +1,9 @@
 package com.github.cerealklla.buildyngblocks.rollerdoor;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
+import java.util.List;
 import java.util.StringJoiner;
 
 import com.github.cerealklla.buildyngblocks.registration.ModBlockEntities;
@@ -64,22 +66,44 @@ import net.neoforged.neoforge.common.extensions.IMenuProviderExtension;
  * exact slot it came from -- while the initial 27-slot storage stays a free, player-managed grid.
  *
  * <p>Obstruction (closing only -- the single new position each step, depth {@code chainLength+1},
- * might not be air/replaceable): pause this step and retry on the next tick window, piston-style.
- * Closing itself has no fixed target length -- it simply keeps extending every step for as long as
- * storage still has material and nothing commands it open, settling to {@code CLOSED} once storage
- * is empty.
+ * might not be air/replaceable): pause this step and retry on the next tick, piston-style. Closing
+ * itself has no fixed target length -- it simply keeps extending every step for as long as storage
+ * still has material and nothing commands it open, settling to {@code CLOSED} once storage is
+ * empty.
  *
- * <p>Movement rate: 2 blocks/sec = one step per {@link #TICKS_PER_STEP} (10) game ticks. v1 commits
- * each step's final block state immediately (no slide animation yet) -- smoothing that into a real
- * interpolated slide is tracked as separate, explicit follow-up work.
+ * <p>Movement rate: 2 blocks/sec = one step per {@link #TICKS_PER_STEP} (10) game ticks. Each step
+ * runs in two phases, mirroring vanilla's own piston moving-block technique (confirmed against the
+ * real decompiled {@code PistonHeadRenderer}/{@code PistonMovingBlockEntity} source for this MC
+ * version before writing this, not guessed): {@link #beginStep} hides every real world block
+ * currently in the chain (sets it to air) and records where each one is sliding to/from for
+ * {@code client.RollerDoorBlockEntityRenderer} to draw as a moving ghost over the step's duration;
+ * {@link #commitStep}, once the duration elapses, sets every real final block state and actually
+ * mutates storage/{@link #chainLength}. Because every block shifts by exactly one position each
+ * step (the "add/remove at the top" conveyor model above), the whole currently-deployed chain
+ * visually slides together, not just the newest/departing segment.
+ *
+ * <p><b>Known limitation, accepted rather than engineered around</b>: {@code animating}/{@code
+ * activeSlides} are deliberately not persisted (they only ever matter for ~10 ticks/0.5 real
+ * seconds). A server save/restart landing inside that exact window would leave the real world
+ * blocks for the hidden positions as air with no record of what they should become, until the door
+ * is operated again. Accepted as a vanishingly rare edge case, not silently unnoticed.
  */
 public class RollerDoorBlockEntity extends BlockEntity implements MenuProvider, IMenuProviderExtension {
 
     public static final int SLOT_COUNT = 27;
-    private static final int TICKS_PER_STEP = 10;
+    static final int TICKS_PER_STEP = 10;
 
     public enum DoorState {
         OPEN, OPENING, CLOSED, CLOSING
+    }
+
+    /**
+     * One block sliding into (closing) or out of (opening) the chain this step. {@code destDepth}
+     * is the position this block will actually occupy once the step commits (1-indexed, below the
+     * control block) -- except {@code 0}, a sentinel meaning "this block is vanishing back into
+     * storage/the control block, never actually placed anywhere."
+     */
+    public record SlideRecord(int destDepth, BlockState state) {
     }
 
     private final SimpleContainer storage = new SimpleContainer(SLOT_COUNT) {
@@ -93,7 +117,14 @@ public class RollerDoorBlockEntity extends BlockEntity implements MenuProvider, 
     private boolean commandedOpen = true;
     private int chainLength = 0;
     private final Deque<Integer> originSlots = new ArrayDeque<>();
-    private long nextStepGameTime = -1;
+
+    private boolean animating = false;
+    private boolean animatingClosing = false;
+    private long animStartGameTime = -1;
+    private List<SlideRecord> activeSlides = List.of();
+    private int pendingChainLength = 0;
+    private int pendingSlotToConsume = -1;
+    private BlockState pendingRemovedState = Blocks.AIR.defaultBlockState();
 
     public RollerDoorBlockEntity(BlockPos pos, BlockState state) {
         super(ModBlockEntities.ROLLER_DOOR.get(), pos, state);
@@ -115,6 +146,27 @@ public class RollerDoorBlockEntity extends BlockEntity implements MenuProvider, 
         return chainLength;
     }
 
+    public boolean isAnimating() {
+        return animating;
+    }
+
+    public boolean isAnimatingClosing() {
+        return animatingClosing;
+    }
+
+    public List<SlideRecord> activeSlides() {
+        return activeSlides;
+    }
+
+    /** 0 (just started) .. 1 (about to commit), interpolated by {@code partialTicks} for smooth client rendering. */
+    public float animationProgress(long levelGameTime, float partialTicks) {
+        if (!animating) {
+            return 1f;
+        }
+        float elapsed = (levelGameTime - animStartGameTime) + partialTicks;
+        return Math.clamp(elapsed / TICKS_PER_STEP, 0f, 1f);
+    }
+
     /** Called from {@link RollerDoorBlock#neighborChanged} (directly, or via neighbor propagation). */
     public void setCommandedOpen(boolean open) {
         if (this.commandedOpen == open) {
@@ -126,55 +178,48 @@ public class RollerDoorBlockEntity extends BlockEntity implements MenuProvider, 
         } else if (!open && (state == DoorState.OPEN || state == DoorState.OPENING)) {
             state = DoorState.CLOSING;
         }
-        if (level != null) {
-            nextStepGameTime = level.getGameTime() + TICKS_PER_STEP;
-        }
         setChanged();
     }
 
     public void serverTick(ServerLevel level, BlockPos controlPos) {
+        if (animating) {
+            if (level.getGameTime() - animStartGameTime >= TICKS_PER_STEP) {
+                commitStep(level, controlPos);
+            }
+            return;
+        }
         if (state != DoorState.OPENING && state != DoorState.CLOSING) {
             return;
         }
-        long gameTime = level.getGameTime();
-        if (nextStepGameTime < 0) {
-            nextStepGameTime = gameTime + TICKS_PER_STEP;
-            return;
-        }
-        if (gameTime < nextStepGameTime) {
-            return;
-        }
         if (state == DoorState.CLOSING) {
-            StepResult result = tryExtendStep(level, controlPos);
+            StepResult result = tryBeginExtendStep(level, controlPos);
             if (result == StepResult.NO_MATERIAL) {
                 state = DoorState.CLOSED;
                 setChanged();
-                return;
             }
         } else {
-            tryRetractStep(level, controlPos);
-            if (chainLength == 0) {
+            if (!tryBeginRetractStep(level, controlPos)) {
                 state = DoorState.OPEN;
                 setChanged();
-                return;
             }
         }
-        nextStepGameTime = gameTime + TICKS_PER_STEP;
-        setChanged();
     }
 
     private enum StepResult {
         PROGRESSED, BLOCKED, NO_MATERIAL
     }
 
-    private StepResult tryExtendStep(ServerLevel level, BlockPos controlPos) {
+    private StepResult tryBeginExtendStep(ServerLevel level, BlockPos controlPos) {
+        List<SlideRecord> records = new ArrayList<>();
         if (chainLength == 0) {
             BlockPos target = controlPos.below(1);
             if (!canOccupy(level, target)) {
                 return StepResult.BLOCKED;
             }
-            level.setBlock(target, ModBlocks.ROLLER_DOOR_END_CAP.get().defaultBlockState(), 3);
-            chainLength = 1;
+            records.add(new SlideRecord(1, ModBlocks.ROLLER_DOOR_END_CAP.get().defaultBlockState()));
+            beginStep(level, controlPos, true, records);
+            pendingChainLength = 1;
+            pendingSlotToConsume = -1;
             return StepResult.PROGRESSED;
         }
 
@@ -192,34 +237,67 @@ public class RollerDoorBlockEntity extends BlockEntity implements MenuProvider, 
         BlockItem blockItem = (BlockItem) slotStack.getItem();
         BlockState newCargoState = blockItem.getBlock().defaultBlockState();
 
-        for (int depth = chainLength; depth >= 1; depth--) {
-            BlockState moving = level.getBlockState(controlPos.below(depth));
-            level.setBlock(controlPos.below(depth + 1), moving, 3);
+        records.add(new SlideRecord(1, newCargoState));
+        for (int oldDepth = 1; oldDepth <= chainLength; oldDepth++) {
+            BlockState existing = level.getBlockState(controlPos.below(oldDepth));
+            records.add(new SlideRecord(oldDepth + 1, existing));
         }
-        level.setBlock(controlPos.below(1), newCargoState, 3);
-
-        slotStack.shrink(1);
-        originSlots.push(slotIndex);
-        chainLength++;
+        beginStep(level, controlPos, true, records);
+        pendingChainLength = chainLength + 1;
+        pendingSlotToConsume = slotIndex;
         return StepResult.PROGRESSED;
     }
 
-    private void tryRetractStep(ServerLevel level, BlockPos controlPos) {
+    private boolean tryBeginRetractStep(ServerLevel level, BlockPos controlPos) {
         if (chainLength == 0) {
-            return;
+            return false;
+        }
+        List<SlideRecord> records = new ArrayList<>();
+        for (int oldDepth = 2; oldDepth <= chainLength; oldDepth++) {
+            BlockState existing = level.getBlockState(controlPos.below(oldDepth));
+            records.add(new SlideRecord(oldDepth - 1, existing));
         }
         BlockState removed = level.getBlockState(controlPos.below(1));
-        for (int depth = 1; depth < chainLength; depth++) {
-            BlockState moving = level.getBlockState(controlPos.below(depth + 1));
-            level.setBlock(controlPos.below(depth), moving, 3);
-        }
-        level.setBlock(controlPos.below(chainLength), Blocks.AIR.defaultBlockState(), 3);
+        records.add(new SlideRecord(0, removed));
 
-        if (!originSlots.isEmpty()) {
-            int slotIndex = originSlots.pop();
-            returnToSlot(slotIndex, removed);
+        beginStep(level, controlPos, false, records);
+        pendingChainLength = chainLength - 1;
+        pendingRemovedState = removed;
+        return true;
+    }
+
+    /** Hides every real block currently in the chain (so only the animated ghost shows) and records the step. */
+    private void beginStep(ServerLevel level, BlockPos controlPos, boolean closing, List<SlideRecord> records) {
+        for (int depth = 1; depth <= chainLength; depth++) {
+            level.setBlock(controlPos.below(depth), Blocks.AIR.defaultBlockState(), 3);
         }
-        chainLength--;
+        animating = true;
+        animatingClosing = closing;
+        activeSlides = records;
+        animStartGameTime = level.getGameTime();
+        setChanged();
+    }
+
+    /** Applies every real final block state and the matching storage/chainLength mutation. */
+    private void commitStep(ServerLevel level, BlockPos controlPos) {
+        for (SlideRecord record : activeSlides) {
+            if (record.destDepth() > 0) {
+                level.setBlock(controlPos.below(record.destDepth()), record.state(), 3);
+            }
+        }
+        if (animatingClosing) {
+            if (pendingSlotToConsume >= 0) {
+                storage.getItem(pendingSlotToConsume).shrink(1);
+                originSlots.push(pendingSlotToConsume);
+            }
+        } else if (!originSlots.isEmpty()) {
+            int slotIndex = originSlots.pop();
+            returnToSlot(slotIndex, pendingRemovedState);
+        }
+        chainLength = pendingChainLength;
+        animating = false;
+        activeSlides = List.of();
+        setChanged();
     }
 
     private int findTopOccupiedSlot() {
@@ -253,6 +331,11 @@ public class RollerDoorBlockEntity extends BlockEntity implements MenuProvider, 
     public void dropEverythingAndDiscardChain(Level level, BlockPos controlPos) {
         if (!(level instanceof ServerLevel serverLevel)) {
             return;
+        }
+        if (animating) {
+            // Force any in-flight step to a consistent, fully-real state before computing drops --
+            // the hidden (air) positions mid-animation have no real block to read otherwise.
+            commitStep(serverLevel, controlPos);
         }
         for (int depth = 1; depth <= chainLength; depth++) {
             BlockPos cellPos = controlPos.below(depth);
