@@ -1,5 +1,6 @@
 {
   "variants": {
-    "": { "model": "buildyngblocks:block/roller_door" }
+    "axis=x": { "model": "buildyngblocks:block/roller_door" },
+    "axis=z": { "model": "buildyngblocks:block/roller_door" }
   }
 }

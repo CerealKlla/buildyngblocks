@@ -36,21 +36,22 @@ Scaffolded 2026-11-09 (see [context/decisions.md](context/decisions.md)):
 - **Required dependency on Nuclyus** (the suite's foundation mod) — no other sibling-mod
   dependencies; this mod is meant to stay standalone.
 
-**Block 1: Roller Door — fully built through v1 scope** (see
+**Block 1: Roller Door — fully built through v1 scope, confirmed live 2026-11-09** (see
 [context/classes/RollerDoor.md](context/classes/RollerDoor.md), full spec and derivation in
 [context/design-document.md](context/design-document.md)) — a hanging, chest-fed, redstone-driven
 door built from real player-chosen blocks. v1 visual is a plain stone cube per spec; v2's
-wheel-and-chain look is explicit future work, not started. Built in stages: scaffold → core
-chain/redstone/state-machine mechanics → GUI (27-slot free-grid storage, block-items-only slot
-filter, standard vanilla chest texture reuse) → **smooth slide animation** (a real two-phase
-begin/commit step model, rendered via vanilla's own `MovingBlockRenderState`/
-`SubmitNodeCollector#submitMovingBlock` primitive — confirmed against the real decompiled
-`PistonHeadRenderer` source for this MC version before writing it, not guessed) → polish
-(break-cleanup done). `./gradlew build` green standalone, whole-suite (17 mods) `sync-mods.sh`
-rebuild clean, both a `runServer` and a real `runClient` boot-smoke-test clean (the client test
-specifically exercises the new renderer registration and model/texture baking — zero
-RollerDoor-related warnings or errors). **Not yet live-tested** — placing a door, loading storage,
-toggling redstone, and actually watching the chain/LIFO/obstruction/neighbor-sync/animation
-behavior all still need a real connected-player session.
+wheel-and-chain look is explicit future work, not started. A real multi-round live-test arc (single
+door, then multiple adjacent doors) found and fixed a chain of real bugs — neighbor-signal
+re-triggering, a missing ghost-render depth translate, frustum culling dropping the renderer, no
+real client sync at all, connection shapes (iron bars/fences/panes) depending on same-tick
+BlockEntity processing order across sibling doors, zero animation collision (air has none — now
+`Blocks.BARRIER`, invisible but solid), a retract-shrink leaving a stray barrier behind forever, and
+unthrottled per-tick obstruction logging that was itself expensive enough to read as a full client
+freeze. See [context/classes/RollerDoor.md](context/classes/RollerDoor.md) for the full technical
+account of each fix. **Confirmed live** — closing, opening, multi-door connections, collision during
+animation, and recovery from a stuck obstruction all work correctly now. One separate, real,
+still-unexplained multi-minute server-thread stall was observed during this same session (confirmed
+via a real thread dump to be a genuine slow operation, not an infinite loop) — not part of this mod
+as far as has been confirmed, explicitly set aside as out of scope per the user's own call.
 
 See [context/classes/](context/classes/) for per-class reference.

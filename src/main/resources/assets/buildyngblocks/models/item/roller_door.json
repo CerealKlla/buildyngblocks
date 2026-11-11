@@ -1,3 +1,6 @@
 {
-  "parent": "buildyngblocks:block/roller_door"
+  "parent": "minecraft:item/generated",
+  "textures": {
+    "layer0": "minecraft:block/iron_block"
+  }
 }

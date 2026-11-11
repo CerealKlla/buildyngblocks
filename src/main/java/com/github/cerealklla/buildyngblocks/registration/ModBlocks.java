@@ -23,14 +23,17 @@ public final class ModBlocks {
     public static final DeferredRegister.Blocks BLOCKS = DeferredRegister.createBlocks(BuildyngBlocksMod.MODID);
     public static final DeferredRegister.Items ITEMS = DeferredRegister.createItems(BuildyngBlocksMod.MODID);
 
-    // v1 visual is a plain stone cube per spec -- the real wheel-and-chain look is explicit future
-    // work (v2), not built now.
+    // v2's wheel-and-chain model doesn't fill the full cube -- noOcclusion() is required or
+    // neighboring blocks wrongly cull their own touching face assuming full solid occlusion (vanilla
+    // defaults every Block to reporting as a full opaque cube regardless of what its model actually
+    // draws), leaving a visible gap. Real bug, found live via a screenshot.
     public static final DeferredBlock<RollerDoorBlock> ROLLER_DOOR = BLOCKS.register(
             "roller_door",
             id -> new RollerDoorBlock(BlockBehaviour.Properties.of()
                     .mapColor(MapColor.STONE)
                     .strength(2.0F)
                     .sound(SoundType.STONE)
+                    .noOcclusion()
                     .setId(ResourceKey.create(Registries.BLOCK, id))));
 
     public static final DeferredItem<BlockItem> ROLLER_DOOR_ITEM = ITEMS.register(

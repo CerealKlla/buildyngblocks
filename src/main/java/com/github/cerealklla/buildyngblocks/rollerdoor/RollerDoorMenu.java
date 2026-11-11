@@ -16,7 +16,10 @@ public class RollerDoorMenu extends AbstractContainerMenu {
     private static final int SLOT_COUNT = RollerDoorBlockEntity.SLOT_COUNT;
     private static final int ROWS = 3;
     private static final int COLS = 9;
-    private static final int PLAYER_INV_Y = 84;
+    // Matches vanilla ChestMenu's own formula exactly (18 + rows*18 + 13) -- confirmed against its
+    // real decompiled source, not guessed; the earlier 84 was off by one pixel against the real
+    // generic_54.png texture's baked-in grid lines, see RollerDoorScreen's own doc for the full story.
+    private static final int PLAYER_INV_Y = 18 + ROWS * 18 + 13;
 
     private final Container storage;
     private final BlockPos doorPos;
@@ -64,7 +67,7 @@ public class RollerDoorMenu extends AbstractContainerMenu {
                 if (!moveItemStackTo(stack, SLOT_COUNT, slots.size(), true)) {
                     return ItemStack.EMPTY;
                 }
-            } else if (!moveItemStackTo(stack, 0, SLOT_COUNT, false)) {
+            } else if (!distributeOneEach(stack)) {
                 return ItemStack.EMPTY;
             }
             if (stack.isEmpty()) {
@@ -74,6 +77,28 @@ public class RollerDoorMenu extends AbstractContainerMenu {
             }
         }
         return clicked;
+    }
+
+    /**
+     * Every storage slot is capped to 1 item ({@code RollerDoorSlot#getMaxStackSize}), but vanilla's
+     * own {@code moveItemStackTo} stops after filling just the FIRST empty slot it finds (confirmed
+     * against its real decompiled source, not assumed) -- fine for a normal stack-based container,
+     * wrong here: a shift-clicked stack of 6 would leave 5 behind in the player's inventory instead
+     * of spreading one-per-slot across the storage grid the way the chain order needs to be visually
+     * unambiguous. This keeps placing exactly 1 into each empty, placeable slot (in slot order) until
+     * either the stack is exhausted or the storage is full.
+     */
+    private boolean distributeOneEach(ItemStack stack) {
+        boolean anythingChanged = false;
+        for (int i = 0; i < SLOT_COUNT && !stack.isEmpty(); i++) {
+            Slot target = slots.get(i);
+            if (target.getItem().isEmpty() && target.mayPlace(stack)) {
+                target.setByPlayer(stack.split(1));
+                target.setChanged();
+                anythingChanged = true;
+            }
+        }
+        return anythingChanged;
     }
 
     @Override
