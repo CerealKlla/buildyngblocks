@@ -8,7 +8,6 @@ import java.util.StringJoiner;
 
 import com.github.cerealklla.buildyngblocks.BuildyngBlocksMod;
 import com.github.cerealklla.buildyngblocks.registration.ModBlockEntities;
-import com.github.cerealklla.buildyngblocks.registration.ModBlocks;
 import com.github.cerealklla.buildyngblocks.registration.ModMenus;
 
 import com.mojang.serialization.Codec;
@@ -59,23 +58,26 @@ import org.jspecify.annotations.Nullable;
  * the TOP of the hanging door, or take the TOP block from the door to store"), new material always
  * enters and leaves at the position directly below this control block (depth 1), with the rest of
  * the already-hanging chain shifting to make room -- a uniform "conveyor" motion, not a fixed-tip
- * operation. Concretely, per {@link #TICKS_PER_STEP}-tick step:
+ * operation. The chain is purely player-inserted cargo -- no permanent synthetic bottom piece (an
+ * earlier version had one, {@code RollerDoorEndCapBlock}; removed 2026-11-14, explicit user
+ * request, since it simplifies this to one single uniform rule with no chain-length-0/1 special
+ * case at either end). Concretely, per {@link #TICKS_PER_STEP}-tick step:
  * <ul>
  *   <li><b>Closing (extend)</b>: pop one unit from the highest-index non-empty storage slot
  *   (remembering that slot index on {@link #originSlots}, a LIFO stack), shift every existing
- *   chain block one position deeper, then place the popped block's state at depth 1. The chain's
- *   permanent {@link RollerDoorEndCapBlock} is always pushed along with everything else, so it
- *   naturally ends up the deepest block always. The very first closing step (chain length 0) has
- *   no material to pop -- it just places the End Cap at depth 1 directly.</li>
+ *   chain block one position deeper, then place the popped block's state at depth 1. If storage has
+ *   no material at all, nothing happens (no new chain starts) regardless of current
+ *   {@code chainLength}.</li>
  *   <li><b>Opening (retract)</b>: the depth-1 block is removed and returned to storage at the slot
  *   popped off {@link #originSlots} (always valid -- same item type, same slot, by construction),
- *   then every remaining chain block shifts one position shallower. When the chain reaches length 1
- *   (only the End Cap left), one more retract step discards it structurally (never added to
- *   inventory -- it has no item form).</li>
+ *   then every remaining chain block shifts one position shallower, until {@code chainLength}
+ *   reaches 0.</li>
  * </ul>
  * Because insertion and removal always happen at the same end (depth 1), the deployed chain itself
  * is a true LIFO stack -- the last block fed in is always the first one retracted, back into the
  * exact slot it came from -- while the initial 27-slot storage stays a free, player-managed grid.
+ * {@code originSlots.size() == chainLength} always, since every deployed chain cell now has a real
+ * origin slot (no synthetic cell that skips inventory).
  *
  * <p>Obstruction (closing only -- the single new position each step, depth {@code chainLength+1},
  * might not be air/replaceable): pause this step and retry on the next tick, piston-style. Closing
@@ -276,22 +278,6 @@ public class RollerDoorBlockEntity extends BlockEntity implements MenuProvider, 
     }
 
     private StepResult tryBeginExtendStep(ServerLevel level, BlockPos controlPos) {
-        List<SlideRecord> records = new ArrayList<>();
-        if (chainLength == 0) {
-            BlockPos target = controlPos.below(1);
-            if (!canOccupy(level, target)) {
-                return StepResult.BLOCKED;
-            }
-            BlockPos endCapPos = controlPos.below(1);
-            BlockState endCapState = bakeConnectedShape(level, endCapPos, controlPos,
-                    ModBlocks.ROLLER_DOOR_END_CAP.get().defaultBlockState());
-            records.add(new SlideRecord(1, endCapState));
-            beginStep(level, controlPos, true, records);
-            pendingChainLength = 1;
-            pendingSlotToConsume = -1;
-            return StepResult.PROGRESSED;
-        }
-
         int slotIndex = findTopOccupiedSlot();
         if (slotIndex < 0) {
             return StepResult.NO_MATERIAL;
@@ -311,6 +297,7 @@ public class RollerDoorBlockEntity extends BlockEntity implements MenuProvider, 
         // and baked into the record -- not recomputed later (neither per-frame on the client nor
         // again at commit). See bakeConnectedShape's own doc for why a plain live neighbor read
         // (vanilla's Block#updateFromNeighbourShapes) isn't good enough with multiple adjacent doors.
+        List<SlideRecord> records = new ArrayList<>();
         BlockState newDepth1 = bakeConnectedShape(level, controlPos.below(1), controlPos, newCargoState);
         records.add(new SlideRecord(1, newDepth1));
         for (int oldDepth = 1; oldDepth <= chainLength; oldDepth++) {
@@ -532,10 +519,8 @@ public class RollerDoorBlockEntity extends BlockEntity implements MenuProvider, 
         for (int depth = 1; depth <= chainLength; depth++) {
             BlockPos cellPos = controlPos.below(depth);
             BlockState cellState = serverLevel.getBlockState(cellPos);
-            if (!cellState.is(ModBlocks.ROLLER_DOOR_END_CAP.get())) {
-                Containers.dropItemStack(serverLevel, cellPos.getX(), cellPos.getY(), cellPos.getZ(),
-                        new ItemStack(cellState.getBlock().asItem()));
-            }
+            Containers.dropItemStack(serverLevel, cellPos.getX(), cellPos.getY(), cellPos.getZ(),
+                    new ItemStack(cellState.getBlock().asItem()));
             serverLevel.setBlock(cellPos, Blocks.AIR.defaultBlockState(), 3);
         }
         chainLength = 0;

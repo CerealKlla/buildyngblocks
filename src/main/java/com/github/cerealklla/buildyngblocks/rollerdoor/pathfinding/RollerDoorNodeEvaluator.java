@@ -12,10 +12,10 @@ import net.minecraft.world.level.pathfinder.WalkNodeEvaluator;
  *
  * <p>This can't be done the normal way -- overriding {@code BlockState#getBlockPathType} on the
  * Roller Door's own {@code Block} class -- because the blocked cells are arbitrary vanilla blocks
- * this mod doesn't own (whatever a player dropped into storage), not instances of a Roller Door
- * block; only the control block itself and the End Cap are really ours, and most of a closed
- * chain's depths are neither. A subclassed evaluator is the one extension point that can still
- * classify an *arbitrary* occupying block based on where it physically is, not what class it is.
+ * this mod doesn't own (whatever a player dropped into storage); only the control block itself is
+ * really ours, and every closed chain depth below it is player-chosen cargo instead. A subclassed
+ * evaluator is the one extension point that can still classify an *arbitrary* occupying block
+ * based on where it physically is, not what class it is.
  *
  * <p>Overriding only {@link #getPathType} is sufficient to cover the whole pipeline: {@code
  * WalkNodeEvaluator#getPathTypeWithinMobBB}/{@code #getPathTypeOfMob} (inherited unchanged) both

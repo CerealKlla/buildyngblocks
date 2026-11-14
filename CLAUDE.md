@@ -64,4 +64,9 @@ real pathfinding, not just bumping into one — consumed by Settlemynts' `GuardE
 optional dependency (see that mod's own CLAUDE.md). `./gradlew build` green, whole-suite (17 mods)
 rebuild + `runServer` boot-smoke-test clean. **Not yet live-tested.**
 
+**Permanent End Cap removed from the chain, same day** (see
+[context/decisions.md](context/decisions.md)) — explicit user request: the chain is now purely
+player-inserted cargo, no synthetic bottom piece. A real simplification, not just cosmetic — see
+`context/classes/RollerDoor.md`'s own section for the full account. `./gradlew build` green.
+
 See [context/classes/](context/classes/) for per-class reference.
