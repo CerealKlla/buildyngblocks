@@ -54,4 +54,14 @@ still-unexplained multi-minute server-thread stall was observed during this same
 via a real thread dump to be a genuine slow operation, not an infinite loop) — not part of this mod
 as far as has been confirmed, explicitly set aside as out of scope per the user's own call.
 
+**Creative menu bug fixed, and a real custom `WalkNodeEvaluator`-based NPC pathfinding integration
+added, 2026-11-14** (see [context/decisions.md](context/decisions.md),
+[context/classes/RollerDoor.md](context/classes/RollerDoor.md)) — the Roller Door item was
+registered but never added to any creative tab; separately, real new `rollerdoor.pathfinding`
+package (`RollerDoorPathTypes`/`RollerDoorNodeEvaluator`/`RollerDoorAwareGroundNavigation`/
+`RollerDoorOpenGoal`) lets any mob opt into recognizing and opening a closed Roller Door during
+real pathfinding, not just bumping into one — consumed by Settlemynts' `GuardEntity` via a new
+optional dependency (see that mod's own CLAUDE.md). `./gradlew build` green, whole-suite (17 mods)
+rebuild + `runServer` boot-smoke-test clean. **Not yet live-tested.**
+
 See [context/classes/](context/classes/) for per-class reference.
